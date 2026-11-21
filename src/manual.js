@@ -128,3 +128,6 @@ export function normalizeClassification(raw) {
 export function classifyManyUser(chats) {
   return `Clasificá cada una de estas ${chats.length} conversaciones de setteo de Instagram. Cada chat empieza con una línea "=== usuario". Para cada una indicá la etapa actual, la etapa más avanzada del embudo a la que llegó, objetivo, objeción principal, temperatura 1-5, calificación económica y un resumen de 2 oraciones.\n\n${chats.map((c) => `=== ${c.name}\n${c.conversation}`).join('\n\n')}`;
 }
+
+// Encabezado para que Claude.ai actúe aunque el prompt llegue como archivo adjunto y sin mensaje.
+export const PROMPT_HEADER = 'INSTRUCCIONES PARA CLAUDE: este texto lo generó la app "Copiloto de setteo". Leelo completo y hacé lo que pide la sección PEDIDO, respetando el formato de respuesta si se indica uno.\n\n';

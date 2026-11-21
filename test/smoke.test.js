@@ -227,6 +227,7 @@ test('modo sin API: prompt para claude.ai y respuesta pegada en el copiloto', as
   const lead = (await call('POST', '/api/leads', { name: '@carla' })).body;
   const p = await call('POST', '/api/prompt/analyze', { leadId: lead.id, mode: 'respondio', conversation: 'Hola, soy docente y quiero desinflamarme' });
   assert.equal(p.status, 200);
+  assert.match(p.body.prompt, /^INSTRUCCIONES PARA CLAUDE/);
   assert.match(p.body.prompt, /Nunca menciones precio/);
   assert.match(p.body.prompt, /soy docente/);
   assert.match(p.body.prompt, /FORMATO DE RESPUESTA/);

@@ -117,6 +117,14 @@ async function copyPrompt(btn, fetcher, fallbackBox) {
     return false;
   }
 }
+// Después de copiar: aviso visible y desplazamiento hasta el recuadro donde va la respuesta.
+function showPasteHint(container) {
+  const box = container.querySelector('[data-paste]');
+  if (!box) return;
+  box.querySelector('.notice')?.remove();
+  box.prepend(h('div', { class: 'notice', role: 'status' }, 'Prompt copiado. Ahora seguí los pasos de abajo: pegalo en Claude.ai, enviá, y traé su respuesta a este recuadro.'));
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 function claudeLink(label = 'Abrir Claude.ai') {
   return h('a', { class: 'btn secondary', href: CLAUDE_AI, target: '_blank', rel: 'noopener noreferrer' }, label);
 }
@@ -128,12 +136,14 @@ function pasteBox({ id, intro, onLoad }) {
     err.replaceChildren();
     try { await busy(btn, 'Cargando…', () => onLoad(ta.value)); } catch (e) { err.replaceChildren(errorBox(e)); }
   } }, 'Cargar respuesta');
-  return h('div', { class: 'msgcard stack' },
+  return h('div', { class: 'msgcard stack', 'data-paste': '' },
     h('h3', {}, 'Respuesta de Claude.ai'),
     h('ol', { class: 'plain small' },
       h('li', {}, intro),
-      h('li', {}, 'Abrí Claude.ai, pegá el prompt y enviá.'),
-      h('li', {}, 'Cuando responda, tocá "Copiar" debajo de la respuesta y pegala acá.')),
+      h('li', {}, 'Abrí Claude.ai en un chat nuevo y pegá (Ctrl + V). Como el texto es largo, Claude lo muestra como un archivo adjunto: es normal.'),
+      h('li', {}, 'En el cuadro de mensaje escribí "Seguí las instrucciones" y enviá.'),
+      h('li', {}, 'Cuando termine de responder, tocá el botón "Copiar" que aparece debajo de su respuesta.'),
+      h('li', {}, 'Volvé acá, pegá en este recuadro y tocá "Cargar respuesta".')),
     h('div', {}, h('label', { for: id }, 'Respuesta'), ta), err,
     h('div', { class: 'row' }, btn, claudeLink()));
 }
@@ -364,6 +374,7 @@ async function viewCopiloto() {
   const copyBtn = h('button', { type: 'button', class: hasApi() ? 'secondary' : null, onclick: async () => {
     const ok = await copyPrompt(copyBtn, () => api('POST', '/api/prompt/analyze', { leadId: lead.id, mode: S.mode, conversation: conv.value }), fallback);
     if (ok && !manual.childElementCount) manual.append(paste());
+    if (ok) showPasteHint(manual);
   } }, 'Copiar prompt para Claude.ai');
   if (!hasApi()) manual.append(paste());
   top.append(
@@ -554,7 +565,7 @@ async function viewImportar() {
   const copyBtn = h('button', { type: 'button', class: hasApi() ? 'secondary' : null, onclick: async () => {
     let chats;
     try { chats = readChats(); } catch (e) { return toast(e.message); }
-    await copyPrompt(copyBtn, () => api('POST', '/api/prompt/classify', { chats }), fallback);
+    if (await copyPrompt(copyBtn, () => api('POST', '/api/prompt/classify', { chats }), fallback)) showPasteHint(copyBtn.closest('section'));
   } }, 'Copiar prompt para Claude.ai');
   const paste = pasteBox({
     id: 'pasteImport',

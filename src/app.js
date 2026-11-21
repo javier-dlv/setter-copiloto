@@ -13,7 +13,7 @@ import {
   DEFAULT_BRAIN, defaultLibrary, ANALYSIS_SCHEMA, CLASSIFY_SCHEMA,
   stableSystem, analysisUser, classifyUser, learningPrompt, weeklyPrompt,
 } from './prompts.js';
-import { ANALYSIS_FORMAT, CLASSIFY_FORMAT, extractJson, normalizeAnalysis, normalizeClassification, classifyManyUser } from './manual.js';
+import { ANALYSIS_FORMAT, CLASSIFY_FORMAT, PROMPT_HEADER, extractJson, normalizeAnalysis, normalizeClassification, classifyManyUser } from './manual.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, '..', 'public');
@@ -185,7 +185,7 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
   app.post('/api/prompt/analyze', async (req, res) => {
     const { lead, stable, user } = await analysisPrompt(req.body);
     await store.updateLead(lead.id, lead);
-    res.json({ prompt: `${stable}\n\n=== PEDIDO ===\n${user}\n\n${ANALYSIS_FORMAT}` });
+    res.json({ prompt: `${PROMPT_HEADER}${stable}\n\n=== PEDIDO ===\n${user}\n\n${ANALYSIS_FORMAT}` });
   });
   // Modo sin API: lee la respuesta pegada desde claude.ai.
   app.post('/api/analyze/manual', async (req, res) => {
@@ -223,7 +223,7 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
   app.post('/api/prompt/classify', async (req, res) => {
     const chats = readChats(req.body?.chats);
     const [cases, brain] = await Promise.all([getCases(), getBrain()]);
-    res.json({ prompt: `${stableSystem({ brain, cases })}\n\n=== PEDIDO ===\n${classifyManyUser(chats)}\n\n${CLASSIFY_FORMAT}` });
+    res.json({ prompt: `${PROMPT_HEADER}${stableSystem({ brain, cases })}\n\n=== PEDIDO ===\n${classifyManyUser(chats)}\n\n${CLASSIFY_FORMAT}` });
   });
   app.post('/api/classify/manual', async (req, res) => {
     const chats = readChats(req.body?.chats);
@@ -253,7 +253,7 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
   });
   app.get('/api/prompt/learning', async (req, res) => {
     const stats = learning(await store.listLeads());
-    res.json({ prompt: `${stableSystem({ brain: await getBrain(), cases: [] })}\n\n=== PEDIDO ===\n${learningUser(stats)}` });
+    res.json({ prompt: `${PROMPT_HEADER}${stableSystem({ brain: await getBrain(), cases: [] })}\n\n=== PEDIDO ===\n${learningUser(stats)}` });
   });
   const weekParam = (q) => (q === undefined ? 0 : intIn(q, 0, 520, 'semana'));
   app.get('/api/report', async (req, res) => res.json(weekly(await store.listLeads(), now(), weekParam(req.query.week))));
@@ -264,7 +264,7 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
   });
   app.get('/api/prompt/report', async (req, res) => {
     const report = weekly(await store.listLeads(), now(), weekParam(req.query.week));
-    res.json({ prompt: `${stableSystem({ brain: await getBrain(), cases: [] })}\n\n=== PEDIDO ===\n${weeklyPrompt(report)}` });
+    res.json({ prompt: `${PROMPT_HEADER}${stableSystem({ brain: await getBrain(), cases: [] })}\n\n=== PEDIDO ===\n${weeklyPrompt(report)}` });
   });
   app.get('/api/funnel', async (req, res) => res.json(funnel(await store.listLeads())));
 
