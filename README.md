@@ -10,12 +10,16 @@ Pantallas: Copiloto, Hoy, Leads, Importar chats, Biblioteca, Casos de éxito, Ap
 - Frontend en HTML, CSS y JavaScript sin framework, servido por el mismo servidor (`public/`).
 - Healthcheck en `GET /healthz`.
 
+## Modo sin costo (sin API key)
+
+Si `ANTHROPIC_API_KEY` no está cargada, la app funciona igual en **modo sin costo**: en Copiloto, Importar chats, Aprendizaje y Reporte aparece **"Copiar prompt para Claude.ai"**. Pegás ese prompt en claude.ai (plan gratis o tu suscripción), copiás la respuesta y la pegás de vuelta en la app con **"Cargar respuesta"**. La lead se actualiza igual que con la API. No se usa la API de Anthropic, así que no hay gasto extra.
+
 ## Variables de entorno
 
 | Variable | Obligatoria | Para qué |
 |---|---|---|
 | `APP_PASSWORD` | Sí | Contraseña única para entrar a la app. |
-| `ANTHROPIC_API_KEY` | Sí | Clave de la API de Claude. Vive solo en el servidor. |
+| `ANTHROPIC_API_KEY` | No | Clave de la API de Claude (se paga por uso). Sin ella, la app trabaja en modo sin costo. Vive solo en el servidor. |
 | `DATABASE_URL` | Sí | Conexión a Postgres. En Railway: `${{Postgres.DATABASE_URL}}`. |
 | `ANTHROPIC_MODEL` | No | Modelo de Claude. Por defecto `claude-sonnet-5-5`. |
 | `ANTHROPIC_EFFORT` | No | Profundidad de razonamiento: `low`, `medium` (defecto) o `high`. |
@@ -30,6 +34,7 @@ Pantallas: Copiloto, Hoy, Leads, Importar chats, Biblioteca, Casos de éxito, Ap
 npm install
 npm test        # prueba de humo: Postgres en memoria y Claude simulado
 npm run dev     # app en http://localhost:3000 con base en memoria y Claude simulado (contraseña: dev)
+npm run dev -- --sin-api   # lo mismo, pero en modo sin costo
 ```
 
 Con Postgres real y Claude de verdad:
@@ -52,7 +57,7 @@ Las tablas (`kv` y `leads`) se crean solas al arrancar, y la biblioteca se siemb
 2. En el servicio de la app, cargar las variables:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `APP_PASSWORD` = tu contraseña
-   - `ANTHROPIC_API_KEY` = tu clave de Anthropic
+   - `ANTHROPIC_API_KEY` = tu clave de Anthropic (opcional: sin ella, modo sin costo)
 3. Healthcheck: `/healthz` (ya está configurado en `railway.json`).
 4. En Settings → Networking, generar un dominio público.
 

@@ -222,6 +222,66 @@ test('biblioteca, casos, cerebro y respaldo', async () => {
   assert.equal((await call('POST', '/api/backup/restore', { foo: 1 })).status, 400);
 });
 
+test('modo sin API: prompt para claude.ai y respuesta pegada en el copiloto', async () => {
+  const lead = (await call('POST', '/api/leads', { name: '@carla' })).body;
+  const p = await call('POST', '/api/prompt/analyze', { leadId: lead.id, mode: 'respondio', conversation: 'Hola, soy docente y quiero desinflamarme' });
+  assert.equal(p.status, 200);
+  assert.match(p.body.prompt, /Nunca menciones precio/);
+  assert.match(p.body.prompt, /soy docente/);
+  assert.match(p.body.prompt, /FORMATO DE RESPUESTA/);
+  // La conversación quedó guardada en la lead.
+  assert.match((await call('GET', '/api/state')).body.leads.find((l) => l.id === lead.id).conversation, /docente/);
+
+  const pasted = `¡Claro! Acá va el análisis:\n\`\`\`json\n${JSON.stringify({
+    etapa: 'calificando', paso: '3', resumen: 'Docente que quiere desinflamar.',
+    perfil: { objetivo: 'Desinflamar', ocupacion: 'Docente', calificacion: 'media', que_intento: '', estancada: 'Sí' },
+    objecion: 'ninguna', temperatura: 9, siguiente_paso: 'Preguntar qué probó.',
+    mensajes: [{ enfoque: 'Empatía', titulo: 'Empática', texto: '¿Qué venís probando hasta ahora?' }, { enfoque: 'inventado', texto: 'Contame más' }, { texto: '' }],
+    evitar: ['Precio'], seguimiento: { texto: '¿Cómo vas?', horas: 30 }, faltan_confirmar: [],
+  }, null, 2)}\n\`\`\`\nAvisame si querés otra versión.`;
+  const m = await call('POST', '/api/analyze/manual', { leadId: lead.id, mode: 'respondio', response: pasted });
+  assert.equal(m.status, 200);
+  assert.equal(m.body.lead.stage, 'calificando');
+  assert.equal(m.body.lead.objective, 'desinflamar');
+  assert.equal(m.body.lead.temperature, 5);
+  assert.equal(m.body.lead.profile.stuck, 'si');
+  assert.equal(m.body.analysis.mensajes.length, 2);
+  assert.equal(m.body.analysis.mensajes[0].enfoque, 'empatia');
+  assert.equal(m.body.analysis.mensajes[1].enfoque, 'directo');
+  assert.equal(m.body.analysis.source, 'claude.ai');
+  const bad = await call('POST', '/api/analyze/manual', { leadId: lead.id, mode: 'respondio', response: 'No puedo ayudarte con eso.' });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /JSON/);
+  await call('DELETE', `/api/leads/${lead.id}`);
+});
+
+test('modo sin API: importar chats y lecturas por prompt', async () => {
+  const chats = [{ name: '@vale', conversation: 'Hola quiero bajar 10 kilos' }, { name: 'rocio', conversation: 'Me pasás el precio?' }];
+  const p = await call('POST', '/api/prompt/classify', { chats });
+  assert.equal(p.status, 200);
+  assert.match(p.body.prompt, /=== @vale[\s\S]*=== rocio/);
+  const response = JSON.stringify([
+    { usuario: '@rocio', etapa: 'calificando', max_etapa: 'calificando', objetivo: 'sin_dato', objecion: 'precio', temperatura: 2, calificacion: 'sin_dato', resumen: 'Preguntó el precio.' },
+    { usuario: 'vale', etapa: 'propuesta', max_etapa: 'propuesta', objetivo: 'peso', objecion: 'ninguna', temperatura: 4, calificacion: 'alta', resumen: 'Quiere bajar 10 kilos.' },
+  ]);
+  const r = await call('POST', '/api/classify/manual', { chats, response });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.created.length, 2);
+  assert.deepEqual(r.body.missing, []);
+  const vale = r.body.created.find((l) => l.name === '@vale');
+  assert.equal(vale.stage, 'propuesta');
+  assert.equal(vale.maxFunnel, 'propuesta');
+  assert.equal(r.body.created.find((l) => l.name === 'rocio').objection, 'precio');
+  const partial = await call('POST', '/api/classify/manual', { chats, response: JSON.stringify([{ usuario: 'vale', etapa: 'apertura' }]) });
+  assert.deepEqual(partial.body.missing, ['rocio']);
+  for (const l of [...r.body.created, ...partial.body.created]) await call('DELETE', `/api/leads/${l.id}`);
+
+  const lp = await call('GET', '/api/prompt/learning');
+  assert.match(lp.body.prompt, /Qué funciona/);
+  const rp = await call('GET', '/api/prompt/report?week=0');
+  assert.match(rp.body.prompt, /reporte semanal/);
+});
+
 test('sin API key el error dice cómo arreglarlo', async () => {
   const llm = createLlm({ apiKey: '', model: 'claude-sonnet-5-5' });
   await assert.rejects(llm.json({ stable: 'x', user: 'y', schema: ANALYSIS_SCHEMA }), (e) => e.status === 503 && /ANTHROPIC_API_KEY/.test(e.message));

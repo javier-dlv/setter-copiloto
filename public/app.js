@@ -86,9 +86,56 @@ async function copy(text) {
   try {
     await navigator.clipboard.writeText(text);
     toast('Copiado');
+    return true;
   } catch {
     toast('No pude copiar: seleccioná el texto y copialo a mano.');
+    return false;
   }
+}
+
+// ---------- Modo sin API (claude.ai)
+const hasApi = () => Boolean(S.state?.claude?.configured);
+const CLAUDE_AI = 'https://claude.ai/new';
+// Pide el prompt al servidor, lo copia y, si el portapapeles falla, lo muestra para copiar a mano.
+async function copyPrompt(btn, fetcher, fallbackBox) {
+  try {
+    const { prompt } = await busy(btn, 'Armando el prompt…', fetcher);
+    const ok = await copy(prompt);
+    if (ok) toast('Prompt copiado. Pegalo en Claude.ai y enviá.');
+    if (fallbackBox) {
+      fallbackBox.replaceChildren();
+      if (!ok) {
+        const ta = h('textarea', { class: 'tall', readonly: true, 'aria-label': 'Prompt para copiar' });
+        ta.value = prompt;
+        fallbackBox.append(h('p', { class: 'small' }, 'Seleccioná todo este texto y copialo:'), ta);
+        ta.select();
+      }
+    }
+    return true;
+  } catch (e) {
+    toast(e.message);
+    return false;
+  }
+}
+function claudeLink(label = 'Abrir Claude.ai') {
+  return h('a', { class: 'btn secondary', href: CLAUDE_AI, target: '_blank', rel: 'noopener noreferrer' }, label);
+}
+// Bloque "pegá la respuesta de Claude": pasos + área de texto + botón de carga.
+function pasteBox({ id, intro, onLoad }) {
+  const ta = h('textarea', { id, class: 'tall', placeholder: 'Pegá acá la respuesta completa de Claude' });
+  const err = h('div');
+  const btn = h('button', { type: 'button', onclick: async () => {
+    err.replaceChildren();
+    try { await busy(btn, 'Cargando…', () => onLoad(ta.value)); } catch (e) { err.replaceChildren(errorBox(e)); }
+  } }, 'Cargar respuesta');
+  return h('div', { class: 'msgcard stack' },
+    h('h3', {}, 'Respuesta de Claude.ai'),
+    h('ol', { class: 'plain small' },
+      h('li', {}, intro),
+      h('li', {}, 'Abrí Claude.ai, pegá el prompt y enviá.'),
+      h('li', {}, 'Cuando responda, tocá "Copiar" debajo de la respuesta y pegala acá.')),
+    h('div', {}, h('label', { for: id }, 'Respuesta'), ta), err,
+    h('div', { class: 'row' }, btn, claudeLink()));
 }
 
 // ---------- Tema
@@ -142,7 +189,7 @@ async function loadState() {
   const c = S.state.claude;
   const b = $('#banner');
   b.hidden = c.configured;
-  b.textContent = c.configured ? '' : 'Falta la ANTHROPIC_API_KEY en el servidor: las funciones con Claude no van a andar hasta que la cargues en Railway (Variables del servicio).';
+  b.textContent = c.configured ? '' : 'Modo sin costo: la app arma el pedido, vos lo pegás en Claude.ai y traés la respuesta de vuelta. No usa la API de Anthropic.';
 }
 async function boot() {
   const s = await api('GET', '/api/session');
@@ -295,21 +342,36 @@ async function viewCopiloto() {
     S.state.meta.modes.map((m) => h('label', { class: 'chip' },
       h('input', { type: 'radio', name: 'mode', value: m, checked: m === S.mode, onchange: () => { S.mode = m; } }), h('span', {}, lbl('mode', m)))));
   const out = h('div');
+  const done = async (r) => {
+    upsertLead(r.lead);
+    S.analysis = r.lead.lastAnalysis;
+    await route();
+    toast('Lead actualizada con lo detectado');
+  };
   const btn = h('button', { type: 'button', onclick: async () => {
     out.replaceChildren();
     try {
-      const r = await busy(btn, 'Analizando con Claude…', () => api('POST', '/api/analyze', { leadId: lead.id, mode: S.mode, conversation: conv.value }));
-      upsertLead(r.lead);
-      S.analysis = r.lead.lastAnalysis;
-      await route();
-      toast('Lead actualizada con lo detectado');
+      await done(await busy(btn, 'Analizando con Claude…', () => api('POST', '/api/analyze', { leadId: lead.id, mode: S.mode, conversation: conv.value })));
     } catch (e) { out.replaceChildren(errorBox(e)); }
   } }, 'Analizar');
+  const manual = h('div');
+  const fallback = h('div');
+  const paste = () => pasteBox({
+    id: 'pasteAnalysis',
+    intro: 'Tocá "Copiar prompt para Claude.ai" (arriba).',
+    onLoad: async (text) => done(await api('POST', '/api/analyze/manual', { leadId: lead.id, mode: S.mode, response: text })),
+  });
+  const copyBtn = h('button', { type: 'button', class: hasApi() ? 'secondary' : null, onclick: async () => {
+    const ok = await copyPrompt(copyBtn, () => api('POST', '/api/prompt/analyze', { leadId: lead.id, mode: S.mode, conversation: conv.value }), fallback);
+    if (ok && !manual.childElementCount) manual.append(paste());
+  } }, 'Copiar prompt para Claude.ai');
+  if (!hasApi()) manual.append(paste());
   top.append(
     h('div', { class: 'row small muted' }, `Etapa: ${lbl('stage', lead.stage)} · Objetivo: ${lbl('objective', lead.objective)} · Temperatura ${lead.temperature}/5 · Seguimiento: ${fmtDate(lead.followUpAt)}`),
     h('div', {}, h('label', { for: 'conv' }, 'Conversación'), conv),
     h('div', {}, h('span', { class: 'small', id: 'modeLbl' }, h('strong', {}, '¿Qué necesitás?')), modes),
-    h('div', { class: 'row' }, btn, h('button', { type: 'button', class: 'secondary', onclick: () => openLead(lead.id) }, 'Ver ficha de la lead')));
+    h('div', { class: 'row' }, hasApi() ? btn : null, copyBtn, h('button', { type: 'button', class: 'secondary', onclick: () => openLead(lead.id) }, 'Ver ficha de la lead')),
+    fallback, manual);
   if (S.analysis && S.analysis === lead.lastAnalysis) {
     out.append(h('p', { class: 'muted small' }, `Último análisis: ${fmtDate(S.analysis.at)} (${lbl('mode', S.analysis.mode)})`), analysisView(S.analysis, lead));
   }
@@ -483,10 +545,35 @@ async function viewImportar() {
     });
     toast(`Importadas ${ok} de ${chats.length}`);
   } }, 'Clasificar e importar');
+  const fallback = h('div');
+  const readChats = () => {
+    const chats = splitChats(ta.value);
+    if (!chats.length) throw new Error('No encontré chats. Cada uno tiene que empezar con una línea "=== usuario".');
+    return chats;
+  };
+  const copyBtn = h('button', { type: 'button', class: hasApi() ? 'secondary' : null, onclick: async () => {
+    let chats;
+    try { chats = readChats(); } catch (e) { return toast(e.message); }
+    await copyPrompt(copyBtn, () => api('POST', '/api/prompt/classify', { chats }), fallback);
+  } }, 'Copiar prompt para Claude.ai');
+  const paste = pasteBox({
+    id: 'pasteImport',
+    intro: 'Pegá los chats arriba y tocá "Copiar prompt para Claude.ai". No borres los chats hasta cargar la respuesta.',
+    onLoad: async (text) => {
+      const r = await api('POST', '/api/classify/manual', { chats: readChats(), response: text });
+      r.created.forEach(upsertLead);
+      log.replaceChildren(...r.created.map((l) => h('li', {}, h('strong', {}, l.name), ' — ', `${lbl('stage', l.stage)} · llegó a ${lbl('stage', l.maxFunnel)} · ${lbl('objective', l.objective)} · ${l.temperature}/5`, h('div', { class: 'small muted' }, l.summary))),
+        ...r.missing.map((n) => h('li', {}, h('strong', {}, n), h('div', { class: 'error' }, 'Claude no devolvió este chat en la respuesta; volvé a importarlo solo.'))));
+      toast(`Importadas ${r.created.length} leads`);
+    },
+  });
   return h('section', { class: 'card stack' },
     h('h1', {}, 'Importar chats'),
-    h('p', { class: 'muted' }, 'Pegá varios chats. Cada uno empieza con una línea que arranca con "===" seguida del usuario. Claude clasifica cada chat y lo carga como lead (de a dos en paralelo).'),
-    h('div', {}, h('label', { for: 'imp' }, 'Chats'), ta), h('div', { class: 'row' }, btn), progress, log);
+    h('p', { class: 'muted' }, hasApi()
+      ? 'Pegá varios chats. Cada uno empieza con una línea que arranca con "===" seguida del usuario. Claude clasifica cada chat y lo carga como lead (de a dos en paralelo).'
+      : 'Pegá varios chats. Cada uno empieza con una línea que arranca con "===" seguida del usuario. Copiá el prompt, pegalo en Claude.ai y traé la respuesta: cada chat se carga como lead. Hasta 60 chats por vez.'),
+    h('div', {}, h('label', { for: 'imp' }, 'Chats'), ta), h('div', { class: 'row' }, hasApi() ? btn : null, copyBtn), fallback,
+    hasApi() ? null : paste, progress, log);
 }
 
 // ---------- 5. Biblioteca
@@ -591,6 +678,10 @@ async function viewAprendizaje() {
       read.replaceChildren(r.text);
     } catch (e) { read.replaceChildren(errorBox(e)); }
   } }, 'Lectura con Claude');
+  const lfb = h('div');
+  const lcopy = h('button', { type: 'button', class: hasApi() ? 'secondary' : null, onclick: () => copyPrompt(lcopy, () => api('GET', '/api/prompt/learning'), lfb) }, 'Copiar prompt para Claude.ai');
+  const readCard = h('section', { class: 'card stack' }, h('h2', {}, 'Lectura con Claude'), h('p', { class: 'muted small' }, hasApi() ? 'Qué funciona, dónde se cae y qué probar.' : 'Copiá el prompt y pegalo en Claude.ai: te responde qué funciona, dónde se cae y qué probar.'),
+    h('div', { class: 'row' }, hasApi() ? btn : null, lcopy, hasApi() ? null : claudeLink()), lfb, read);
   return h('div', {},
     h('section', { class: 'card' }, h('h1', {}, 'Aprendizaje'),
       L.lowData ? h('div', { class: 'notice' }, `Pocos datos todavía (${L.totals.booked} agendadas, ${L.totals.sent} mensajes registrados). Tomá estas tasas como pistas, no como conclusiones. Se vuelven confiables con al menos 5 agendas y 20 mensajes marcados con "La envié".`) : null,
@@ -598,7 +689,7 @@ async function viewAprendizaje() {
         h('dt', {}, 'Leads'), h('dd', {}, L.totals.leads), h('dt', {}, 'Agendadas'), h('dd', {}, `${L.totals.booked} (${pct(L.totals.rate)})`),
         h('dt', {}, 'Mensajes registrados'), h('dd', {}, L.totals.sent),
         h('dt', {}, 'Tiempo mediano hasta agendar'), h('dd', {}, L.medianHoursToBook === null ? '—' : L.medianHoursToBook < 48 ? `${Math.round(L.medianHoursToBook)} h` : `${(L.medianHoursToBook / 24).toFixed(1)} días`))),
-    h('section', { class: 'card' }, h('h2', {}, 'Lectura con Claude'), h('p', { class: 'muted small' }, 'Qué funciona, dónde se cae y qué probar.'), btn, read),
+    readCard,
     h('section', { class: 'card' }, h('h2', {}, 'Tasa de agenda por enfoque y etapa'),
       rateTable([['Enfoque'], ['Etapa'], ['Enviados', 1], ['Agendaron', 1], ['Tasa', 1]], L.byApproachStage.map((r) => [lbl('approach', r.approach), lbl('stage', r.stage), r.sent, r.booked, pct(r.rate)]))),
     h('section', { class: 'card grid2' },
@@ -645,7 +736,13 @@ async function viewReporte() {
         h('dt', {}, 'Objeciones'), h('dd', {}, objs.length ? objs.map(([k, n]) => `${lbl('objection', k)}: ${n}`).join(' · ') : 'Ninguna registrada'),
         c.withoutFollowUp !== null ? h('dt', {}, 'Leads sin seguimiento') : null,
         c.withoutFollowUp !== null ? h('dd', {}, `${c.withoutFollowUp} activas sin fecha de seguimiento o con seguimiento vencido`) : null)),
-    h('section', { class: 'card' }, h('h2', {}, 'Lectura con Claude'), btn, read));
+    (() => {
+      const fb = h('div');
+      const cp = h('button', { type: 'button', class: hasApi() ? 'secondary' : null, onclick: () => copyPrompt(cp, () => api('GET', `/api/prompt/report?week=${S.week}`), fb) }, 'Copiar prompt para Claude.ai');
+      return h('section', { class: 'card stack' }, h('h2', {}, 'Lectura con Claude'),
+        hasApi() ? null : h('p', { class: 'muted small' }, 'Copiá el prompt y pegalo en Claude.ai para que te escriba la lectura de la semana.'),
+        h('div', { class: 'row' }, hasApi() ? btn : null, cp, hasApi() ? null : claudeLink()), fb, read);
+    })());
 }
 
 // ---------- 9. Embudo

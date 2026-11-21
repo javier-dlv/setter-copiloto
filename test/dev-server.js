@@ -12,7 +12,7 @@ const store = makeStore(pool);
 await seed(store);
 
 const llm = {
-  configured: true,
+  configured: process.env.NO_API !== '1' && !process.argv.includes('--sin-api'),
   model: 'simulado',
   async json({ schema }) {
     if (schema === ANALYSIS_SCHEMA) {

@@ -13,6 +13,7 @@ import {
   DEFAULT_BRAIN, defaultLibrary, ANALYSIS_SCHEMA, CLASSIFY_SCHEMA,
   stableSystem, analysisUser, classifyUser, learningPrompt, weeklyPrompt,
 } from './prompts.js';
+import { ANALYSIS_FORMAT, CLASSIFY_FORMAT, extractJson, normalizeAnalysis, normalizeClassification, classifyManyUser } from './manual.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, '..', 'public');
@@ -78,6 +79,7 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
 
   // Cuerpos JSON: 6 MB solo para restaurar respaldos, 300 KB para el resto.
   app.use('/api/backup/restore', express.json({ limit: '6mb' }));
+  app.use(['/api/prompt/classify', '/api/classify/manual'], express.json({ limit: '2mb' }));
   app.use('/api', express.json({ limit: '300kb' }));
 
   // Las escrituras exigen JSON: un formulario de otro sitio no puede mandarlo sin pasar por CORS.
@@ -154,44 +156,104 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
   app.get('/api/today', async (req, res) => res.json(todayList(await store.listLeads(), now())));
 
   // ---- Copiloto
-  app.post('/api/analyze', async (req, res) => {
-    const lead = await loadLead(req.body?.leadId);
-    const mode = oneOf(req.body?.mode, MODES, 'modo');
-    if ('conversation' in (req.body || {})) lead.conversation = str(req.body.conversation, LIMITS.conversation, 'conversación');
+  // Arma las dos partes del prompt de análisis (y guarda la conversación pegada).
+  async function analysisPrompt(body) {
+    const lead = await loadLead(body?.leadId);
+    const mode = oneOf(body?.mode, MODES, 'modo');
+    if ('conversation' in (body || {})) lead.conversation = str(body.conversation, LIMITS.conversation, 'conversación');
     const [library, cases, brain, leads] = await Promise.all([getLibrary(), getCases(), getBrain(), store.listLeads()]);
-    const analysis = await llm.json({
+    return {
+      lead, mode,
       stable: stableSystem({ brain, cases }),
       user: analysisUser({ lead, mode, conversation: lead.conversation, winners: pickWinners(winners(leads), lead.stage), library: libraryFor(library, lead, mode) }),
-      schema: ANALYSIS_SCHEMA,
-    });
+    };
+  }
+  async function finishAnalysis(lead, mode, analysis, source) {
     const at = nowIso();
     analysis.mensajes = (analysis.mensajes || []).slice(0, 3);
-    lead.lastAnalysis = { ...analysis, mode, at };
+    lead.lastAnalysis = { ...analysis, mode, at, source };
     applyAnalysis(lead, analysis, at);
-    res.json({ analysis: lead.lastAnalysis, lead: await store.updateLead(lead.id, lead) });
+    return { analysis: lead.lastAnalysis, lead: await store.updateLead(lead.id, lead) };
+  }
+
+  app.post('/api/analyze', async (req, res) => {
+    const { lead, mode, stable, user } = await analysisPrompt(req.body);
+    const analysis = await llm.json({ stable, user, schema: ANALYSIS_SCHEMA });
+    res.json(await finishAnalysis(lead, mode, analysis, 'api'));
+  });
+  // Modo sin API: devuelve el prompt para pegar en claude.ai.
+  app.post('/api/prompt/analyze', async (req, res) => {
+    const { lead, stable, user } = await analysisPrompt(req.body);
+    await store.updateLead(lead.id, lead);
+    res.json({ prompt: `${stable}\n\n=== PEDIDO ===\n${user}\n\n${ANALYSIS_FORMAT}` });
+  });
+  // Modo sin API: lee la respuesta pegada desde claude.ai.
+  app.post('/api/analyze/manual', async (req, res) => {
+    const lead = await loadLead(req.body?.leadId);
+    const mode = oneOf(req.body?.mode, MODES, 'modo');
+    const analysis = normalizeAnalysis(extractJson(str(req.body?.response, 100000, 'respuesta'), 'object'));
+    res.json(await finishAnalysis(lead, mode, analysis, 'claude.ai'));
   });
 
-  app.post('/api/classify', async (req, res) => {
-    const name = str(req.body?.name, LIMITS.name, 'nombre').trim() || 'Sin nombre';
-    const conversation = str(req.body?.conversation, LIMITS.conversation, 'conversación').trim();
-    if (!conversation) throw new HttpError(400, 'El chat está vacío.');
-    const [cases, brain] = await Promise.all([getCases(), getBrain()]);
-    const c = await llm.json({ stable: stableSystem({ brain, cases }), user: classifyUser({ name, conversation }), schema: CLASSIFY_SCHEMA, maxTokens: 4000 });
+  async function createClassifiedLead(name, conversation, c) {
     const at = nowIso();
     const lead = newLead({ name, conversation }, at);
     lead.events[0].source = 'importado';
     advanceFunnel(lead, c.max_etapa, at);
     applyAnalysis(lead, { etapa: c.etapa, objecion: c.objecion, temperatura: c.temperatura, resumen: c.resumen, perfil: { objetivo: c.objetivo, calificacion: c.calificacion } }, at);
-    res.status(201).json(await store.insertLead(newId(), lead, new Date(at)));
+    return store.insertLead(newId(), lead, new Date(at));
+  }
+  const readChat = (c) => {
+    const conversation = str(c?.conversation, LIMITS.conversation, 'conversación').trim();
+    if (!conversation) throw new HttpError(400, 'Hay un chat vacío.');
+    return { name: str(c?.name, LIMITS.name, 'nombre').trim() || 'Sin nombre', conversation };
+  };
+  const readChats = (arr) => {
+    if (!Array.isArray(arr) || !arr.length) throw new HttpError(400, 'No llegaron chats para importar.');
+    if (arr.length > 60) throw new HttpError(413, 'Son demasiados chats juntos: importalos de a 60 como máximo.');
+    return arr.map(readChat);
+  };
+
+  app.post('/api/classify', async (req, res) => {
+    const { name, conversation } = readChat(req.body);
+    const [cases, brain] = await Promise.all([getCases(), getBrain()]);
+    const c = await llm.json({ stable: stableSystem({ brain, cases }), user: classifyUser({ name, conversation }), schema: CLASSIFY_SCHEMA, maxTokens: 4000 });
+    res.status(201).json(await createClassifiedLead(name, conversation, c));
+  });
+  app.post('/api/prompt/classify', async (req, res) => {
+    const chats = readChats(req.body?.chats);
+    const [cases, brain] = await Promise.all([getCases(), getBrain()]);
+    res.json({ prompt: `${stableSystem({ brain, cases })}\n\n=== PEDIDO ===\n${classifyManyUser(chats)}\n\n${CLASSIFY_FORMAT}` });
+  });
+  app.post('/api/classify/manual', async (req, res) => {
+    const chats = readChats(req.body?.chats);
+    const items = extractJson(str(req.body?.response, 300000, 'respuesta'), 'array').map(normalizeClassification);
+    if (!items.length) throw new HttpError(400, 'La respuesta pegada no trae ninguna clasificación.');
+    const key = (s) => s.toLowerCase().replace(/^@/, '').trim();
+    const created = [];
+    const missing = [];
+    for (const [i, chat] of chats.entries()) {
+      const c = items.find((it) => it.usuario && key(it.usuario) === key(chat.name)) || (items.length === chats.length ? items[i] : null);
+      if (!c) { missing.push(chat.name); continue; }
+      created.push(await createClassifiedLead(chat.name, chat.conversation, c));
+    }
+    res.status(201).json({ created, missing });
   });
 
   // ---- Métricas
   app.get('/api/learning', async (req, res) => res.json(learning(await store.listLeads())));
+  const learningUser = (stats) => {
+    const { winners: w, ...rest } = stats;
+    return learningPrompt({ ...rest, winners: w.slice(0, 15) });
+  };
   app.post('/api/learning/read', async (req, res) => {
     const stats = learning(await store.listLeads());
-    const { winners: w, ...rest } = stats;
-    const text = await llm.text({ stable: stableSystem({ brain: await getBrain(), cases: [] }), user: learningPrompt({ ...rest, winners: w.slice(0, 15) }) });
+    const text = await llm.text({ stable: stableSystem({ brain: await getBrain(), cases: [] }), user: learningUser(stats) });
     res.json({ text, stats });
+  });
+  app.get('/api/prompt/learning', async (req, res) => {
+    const stats = learning(await store.listLeads());
+    res.json({ prompt: `${stableSystem({ brain: await getBrain(), cases: [] })}\n\n=== PEDIDO ===\n${learningUser(stats)}` });
   });
   const weekParam = (q) => (q === undefined ? 0 : intIn(q, 0, 520, 'semana'));
   app.get('/api/report', async (req, res) => res.json(weekly(await store.listLeads(), now(), weekParam(req.query.week))));
@@ -199,6 +261,10 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
     const report = weekly(await store.listLeads(), now(), weekParam(req.query.week));
     const text = await llm.text({ stable: stableSystem({ brain: await getBrain(), cases: [] }), user: weeklyPrompt(report) });
     res.json({ text, report });
+  });
+  app.get('/api/prompt/report', async (req, res) => {
+    const report = weekly(await store.listLeads(), now(), weekParam(req.query.week));
+    res.json({ prompt: `${stableSystem({ brain: await getBrain(), cases: [] })}\n\n=== PEDIDO ===\n${weeklyPrompt(report)}` });
   });
   app.get('/api/funnel', async (req, res) => res.json(funnel(await store.listLeads())));
 
