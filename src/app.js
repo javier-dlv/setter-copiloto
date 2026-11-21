@@ -373,7 +373,8 @@ export function createApp({ store, llm, password, sessionSecret, production = fa
 
   app.use('/api', (req, res, next) => next(new HttpError(404, 'Ruta de la API inexistente.')));
 
-  app.use(express.static(PUBLIC_DIR, { index: 'index.html', maxAge: production ? '1h' : 0 }));
+  // Sin caché larga: el navegador revalida (ETag) y siempre toma la última versión después de un despliegue.
+  app.use(express.static(PUBLIC_DIR, { index: 'index.html', maxAge: 0, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {

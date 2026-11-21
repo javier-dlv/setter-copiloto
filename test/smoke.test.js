@@ -74,6 +74,7 @@ test('healthz y cabeceras de seguridad', async () => {
   assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
   const page = await call('GET', '/', undefined, { raw: true });
   assert.equal(page.status, 200);
+  assert.equal(page.headers.get('cache-control'), 'no-cache');
   assert.match(await page.text(), /Copiloto de setteo/);
 });
 
